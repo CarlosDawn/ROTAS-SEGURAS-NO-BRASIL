@@ -1,4 +1,4 @@
-# ROTAS-SEGURAS-NO-ESTADO-DE-PIAUI
+# ROTAS-SEGURAS
 
 Projeto de disciplina extensionista do Centro Universitário Estácio, realizado pelos estudantes Carlos Yuri e Francisco Neto do curso de Ciências da Computação.
 
