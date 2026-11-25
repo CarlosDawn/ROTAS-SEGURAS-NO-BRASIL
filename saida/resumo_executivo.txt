@@ -1,0 +1,35 @@
+RESUMO EXECUTIVO — ACIDENTES 2026
+==============================================================
+PANORAMA
+ • 48,712 acidentes, 4,121 mortos e 13,397 feridos graves.
+ • 28.0% dos acidentes foram graves (óbito ou lesão grave); 7.2% tiveram óbito.
+
+HOTSPOTS
+ • 50% dos acidentes estão em apenas 15.6% dos quilômetros com ocorrência.
+ • Trecho nº 1 em severidade: BR-101/SC km 203–208 — 236 acidentes, 6 mortos, UPS 887.
+ • 50 dos 50 principais trechos são estatisticamente anômalos (Poisson + Bonferroni).
+
+FATORES ASSOCIADOS À GRAVIDADE (taxas com IC 95%)
+ Tipo de acidente:
+ • Atropelamento de Pedestre (70% graves; risco 2.7× o restante; n=1,872)
+ • Colisão frontal (57% graves; risco 2.1× o restante; n=2,182)
+ • Queda de ocupante de veículo (32% graves; risco 1.2× o restante; n=10,433)
+ Causa:
+ • Suicídio (presumido) (89% graves; risco 3.2× o restante; n=122)
+ • Pedestre andava na pista (76% graves; risco 2.8× o restante; n=320)
+ • Área urbana sem a presença de local apropriado para a travessia de pedestres (74% graves; risco 2.6× o restante; n=57)
+ Ambiente, via e horário:
+ • fase dia: Plena Noite (32% graves; risco 1.2× o restante; n=16,893)
+ • condicao metereologica: Céu Claro (29% graves; risco 1.1× o restante; n=30,608)
+ • tipo pista: Simples (33% graves; risco 1.5× o restante; n=23,443)
+ • tracado via: Reta;Em Obras (33% graves; risco 1.2× o restante; n=355)
+ • uso solo: Não (30% graves; risco 1.2× o restante; n=28,198)
+ • faixa horaria: Noite (18-23h) (32% graves; risco 1.2× o restante; n=13,649)
+ • Maior associação geral com a gravidade (V de Cramér): tipo_acidente (V=0.27); causa_acidente (V=0.24); tem_pedestre (V=0.18).
+
+PERFIS DE RISCO
+ • Grupo de veículo mais letal entre os envolvidos: Outros (26.2% de óbitos).
+ • Faixa etária com maior taxa de óbito/lesão grave: 75+ anos (19.7%).
+ • Taxa de óbito/lesão grave: homens 15.9% | mulheres 14.6%.
+
+Observação: taxas calculadas entre os envolvidos em acidentes registrados (sem dados de exposição/tráfego).

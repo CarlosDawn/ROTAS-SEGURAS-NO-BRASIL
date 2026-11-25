@@ -1,102 +1,6 @@
-"""
-ANÁLISE DE ACIDENTES RODOVIÁRIOS 2026
-Hotspots, fatores associados à gravidade e perfis de risco
-=====================================================================
-Bibliotecas: pandas, numpy, duckdb, matplotlib  (folium é opcional)
 
-COMO RODAR NO PYCHARM
-  1. Coloque este arquivo e o CSV (acidentes2026.csv) na mesma pasta do projeto.
-  2. File > Settings > Project > Python Interpreter > instale os pacotes de requirements.txt
-     (ou no terminal do PyCharm:  pip install -r requirements.txt).
-  3. Ajuste a seção CONFIGURAÇÃO (nome do arquivo, separador, encoding).
-  4. Run > Run 'analise_acidentes_2026'  (o script inteiro)
-     OU execute seção por seção: o PyCharm reconhece os marcadores "# %%" como células
-     (botão ▶ ao lado de cada célula; os gráficos aparecem na aba "Plots"/SciView).
-  5. Também aceita o caminho do CSV como argumento:  python analise_acidentes_2026.py meu_arquivo.csv
-
-SAÍDAS (criadas na pasta "saida/" ao lado do script)
-  graficos/*.png · tabelas/*.csv · *_silver.parquet · mapa_hotspots.html · resumo_executivo.txt
-
-DICA: se abrir janelas demais, defina MOSTRAR_GRAFICOS = False (os PNG continuam sendo salvos).
-"""
-
-
-# %% [markdown]
-# # Análise de Acidentes Rodoviários 2026
-# ## Hotspots, fatores associados à gravidade e perfis de risco
-#
-# **Objetivo:** transformar o arquivo de ocorrências de 2026 (uma linha por pessoa envolvida) em evidências para orientar intervenções de segurança viária: **onde** agir (hotspots), **o que** aumenta a gravidade (fatores) e **para quem** agir (perfis de risco).
-#
-# **Como este notebook está organizado**
-#
-# | Parte | Conteúdo | Gráficos |
-# |---|---|---|
-# | 0 | Tecnologias e arquitetura recomendadas | – |
-# | 1 | Configuração, carga (DuckDB) e qualidade dos dados | valores ausentes |
-# | 2 | Limpeza e modelagem: tabela de **pessoas** e tabela de **acidentes** | – |
-# | 3 | Visão geral (EDA) | mês, dia/hora, classificação, causas |
-# | 4 | **Hotspots**: trechos km, concentração, mapa, recorrência, municípios, delegacias | 8 gráficos |
-# | 5 | **Fatores associados à gravidade**: taxas, risco relativo, Cramér V, regressão logística | 6 gráficos |
-# | 6 | **Perfis de risco**: pessoa, veículo, combinações e perfil dos hotspots | 6 gráficos |
-# | 7 | **Matriz de intervenções** por hotspot | 1 gráfico |
-# | 8 | Exportação, resumo executivo e limitações | – |
-#
-# > **Como usar:** ajuste apenas a célula de *Configuração* (caminho do arquivo, separador, encoding) e execute as células em ordem (`Kernel > Restart & Run All`). Todos os gráficos são salvos em `saida/graficos/` e as tabelas finais em `saida/tabelas/`.
-
-# %% [markdown]
-# ---
-# # Parte 0 — Tecnologias e linguagens recomendadas
-#
-# ### Núcleo do projeto (o que este notebook usa)
-# | Camada | Ferramenta | Por que usar |
-# |---|---|---|
-# | Linguagem principal | **Python 3.10+** | Simples de ler, enorme ecossistema de dados, padrão de mercado |
-# | Linguagem de consulta | **SQL (via DuckDB)** | Agregações pesadas em milhões de linhas, direto no CSV/Parquet, sem servidor |
-# | Manipulação | **pandas** | Limpeza, criação de variáveis, tabelas dinâmicas |
-# | Cálculo numérico | **numpy** | Estatística vetorizada (IC de Wilson, regressão logística, Poisson) |
-# | Gráficos | **matplotlib** | Controle total e gráficos reproduzíveis |
-# | Ambiente | **Jupyter Notebook / JupyterLab / VS Code** | Código + texto + gráficos no mesmo documento |
-#
-# ### Extensões profissionais (opcionais)
-# | Necessidade | Ferramenta |
-# |---|---|
-# | Mapas interativos | **folium** (usado aqui se instalado), **kepler.gl**, **QGIS** |
-# | Geoprocessamento (snap em rodovia, buffers, Getis-Ord / KDE) | **geopandas**, **shapely**, **pysal/esda** |
-# | Modelos estatísticos com p-valor e diagnósticos | **statsmodels** |
-# | Modelos preditivos (gradient boosting, SHAP) | **scikit-learn**, **LightGBM**, **shap** |
-# | Painel para gestores | **Streamlit**, **Power BI**, **Metabase**, **Apache Superset** |
-# | Armazenamento eficiente | **Parquet** (colunar, 5 a 10 vezes menor que CSV) |
-# | Reprodutibilidade | **Git**, `requirements.txt`/**uv**, **pytest** (testes de qualidade de dados) |
-# | Orquestração (quando virar rotina mensal) | **Prefect**, **Airflow**, **dbt** (transformações SQL versionadas) |
-#
-# ### Arquitetura sugerida (camadas)
-# ```
-#  CSV bruto  ──►  BRONZE (cópia fiel, Parquet)
-#                    │   tipagem, limpeza, deduplicação
-#                    ▼
-#                  SILVER  (tabela `pessoas` limpa)
-#                    │   agregação por acidente / trecho / município
-#                    ▼
-#                  GOLD    (tabelas analíticas: hotspots, fatores, perfis)
-#                    │
-#                    ▼
-#         Notebook (análise)  ►  Painel (Streamlit/Power BI)  ►  Relatório para gestores
-# ```
-#
-# ### Instalação
-# ```bash
-# python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-# pip install pandas numpy duckdb matplotlib jupyterlab pyarrow
-# pip install folium            # opcional (mapa interativo)
-# ```
-
-# %% [markdown]
-# ---
-# # Parte 1 — Configuração, carga e qualidade dos dados
-#
-# ### 1.1 Bibliotecas e parâmetros
-# Todos os parâmetros ajustáveis ficam em um só lugar. Os **pesos UPS** (Unidade Padrão de Severidade) transformam acidentes com consequências diferentes em um único índice comparável: um acidente fatal "vale" mais que vários acidentes sem vítimas. Os valores 1/4/13 são os usuais em metodologias de rodovias federais; **confirme o padrão adotado pelo seu órgão** e ajuste se necessário.
-
+#-Parte 1 — Configuração, carga e qualidade dos dados
+#--1.1 Bibliotecas e parâmetros
 # %%
 import sys, warnings, math, itertools
 from pathlib import Path
@@ -110,7 +14,7 @@ import matplotlib.ticker as mtick
 warnings.filterwarnings("ignore")
 
 # ------------------------- CONFIGURAÇÃO -------------------------
-ARQUIVO   = "acidentes2026_todas_causas_tipos.csv"   # caminho do seu arquivo (relativo à pasta do script ou absoluto)
+ARQUIVO   = "ambiente/acidentes2026_causas_tipos.csv"   # caminho do seu arquivo (relativo à pasta do script ou absoluto)
 SEPARADOR = ";"                    # arquivos da PRF costumam usar ";"
 ENCODING  = "latin-1"              # use "utf-8" se o arquivo estiver em UTF-8
 ANO_REF   = 2026                   # ano de referência para calcular idade do veículo
@@ -132,7 +36,7 @@ ARQUIVO = (Path(ARQUIVO) if Path(ARQUIVO).is_absolute() else BASE_DIR / ARQUIVO)
 
 PASTA = BASE_DIR / "saida"
 (PASTA / "graficos").mkdir(parents=True, exist_ok=True)
-(PASTA / "tabelas").mkdir(parents=True, exist_ok=True)
+#(PASTA / "tabelas").mkdir(parents=True, exist_ok=True)
 
 plt.rcParams.update({
     "figure.dpi": 100, "savefig.dpi": 150, "axes.spines.top": False, "axes.spines.right": False,
@@ -152,10 +56,7 @@ def salvar(fig, nome):
     if MOSTRAR_GRAFICOS: plt.show()
     else: plt.close(fig)
 
-# %% [markdown]
-# ### 1.2 Carga do arquivo com DuckDB
-# Lemos **tudo como texto** (`all_varchar`) e só depois convertemos tipos com `TRY_CAST`. Isso evita falhas por vírgula decimal (`"386,4"`), campos vazios ou valores inesperados. O DuckDB lê o CSV em paralelo e consegue processar arquivos muito maiores que a memória RAM.
-
+#--1.2 Carga do arquivo com DuckDB
 # %%
 con = duckdb.connect()   # banco em memória (use duckdb.connect("acidentes.duckdb") para persistir)
 
@@ -185,12 +86,8 @@ faltando = [c for c in ESPERADAS if c not in presentes]
 print("Colunas faltando:", faltando if faltando else "nenhuma ✔")
 display(con.execute("SELECT * FROM bruto LIMIT 5").df())
 
-# %% [markdown]
-# ### 1.3 Diagnóstico de qualidade (valores ausentes)
-# Antes de analisar, medimos o quanto cada coluna está preenchida. Campos como `latitude`, `longitude`, `idade` e `ano_fabricacao_veiculo` costumam ter ausências, e isso afeta quais análises são confiáveis (por exemplo, mapas só usam registros com coordenadas).
-
+#--1.3 Diagnóstico de qualidade (valores ausentes)
 # %%
-# % de vazios por coluna, calculado em SQL (uma única passagem pelos dados)
 partes = ",\n".join(
     f"100.0 * SUM(CASE WHEN {c} IS NULL OR TRIM({c}) = '' THEN 1 ELSE 0 END) / COUNT(*) AS {c}"
     for c in presentes
@@ -205,19 +102,8 @@ ax.xaxis.set_major_formatter(mtick.PercentFormatter())
 salvar(fig, "01_qualidade_ausentes")
 display(ausentes.head(10))
 
-# %% [markdown]
-# ---
-# # Parte 2 — Limpeza e modelagem dos dados
-#
-# ### 2.1 Tabela `pessoas` (silver)
-# O arquivo tem **uma linha por pessoa**; por isso o mesmo `id` de acidente se repete. Regras aplicadas em SQL:
-#
-# 1. Converter tipos (`TRY_CAST`), trocando vírgula decimal por ponto em `km`, `latitude` e `longitude`.
-# 2. Aceitar datas em `AAAA-MM-DD` ou `DD/MM/AAAA`.
-# 3. Remover espaços e padronizar `uf` e `municipio` em maiúsculas.
-# 4. Invalidar valores impossíveis: idade fora de 0–110, ano de fabricação fora de 1950–2027, coordenadas fora do Brasil.
-# 5. Remover duplicatas exatas (`id` + `pesid` + `id_veiculo`).
-
+#-Parte 2 — Limpeza e modelagem dos dados
+#--2.1 Tabela `pessoas` (silver)
 # %%
 COLS_TEXTO = ["causa_principal","causa_acidente","tipo_acidente","classificacao_acidente","fase_dia","sentido_via",
               "condicao_metereologica","tipo_pista","tracado_via","uso_solo","tipo_veiculo","marca","tipo_envolvido",
@@ -265,10 +151,7 @@ print(f"Pessoas: {len(pessoas):,} | Acidentes distintos: {pessoas['id'].nunique(
       f"Período: {pessoas['data'].min().date()} a {pessoas['data'].max().date()}")
 display(pessoas.head())
 
-# %% [markdown]
-# ### 2.2 Variáveis derivadas por pessoa
-# Criamos grupos legíveis para análise: **gravidade individual**, **faixa etária**, **grupo do veículo** (moto, caminhão…) e **idade do veículo**. A classificação do veículo usa expressões regulares porque o texto original varia ("Motocicleta", "Motoneta", "Caminhão-trator"…).
-
+#--2.2 Variáveis derivadas por pessoa
 # %%
 p = pessoas  # alias curto
 
@@ -303,13 +186,7 @@ p["faixa_idade_veiculo"] = pd.cut(p.idade_veiculo, bins=[-1, 2, 5, 10, 15, 20, 1
 display(p.gravidade_pessoa.value_counts().to_frame("pessoas"))
 display(p.grupo_veiculo.value_counts().to_frame("pessoas"))
 
-# %% [markdown]
-# ### 2.3 Tabela `acidentes` (uma linha por ocorrência)
-# Hotspots e fatores ambientais devem ser analisados **por acidente**, não por pessoa; caso contrário, um acidente com 5 ocupantes contaria 5 vezes. O DuckDB consulta o DataFrame `pessoas` diretamente e agrega em SQL:
-#
-# * `mode()` → causa mais frequente do acidente; `arg_min(tipo, ordem)` → tipo de acidente de menor ordem (o principal);
-# * contagens de pessoas e veículos, soma de mortos/feridos e *flags* de composição (há moto? caminhão? pedestre?).
-
+#--2.3 Tabela `acidentes` (uma linha por ocorrência)
 # %%
 con.register("pessoas_df", pessoas)
 
@@ -362,13 +239,7 @@ print(f"Acidentes: {len(a):,} | com óbito: {a.fatal.sum():,} ({a.fatal.mean():.
 print(f"Total de mortos: {a.mortos.sum():,} | feridos graves: {a.feridos_graves.sum():,} | feridos leves: {a.feridos_leves.sum():,}")
 display(a.head())
 
-# %% [markdown]
-# ---
-# # Parte 3 — Visão geral (EDA)
-# Antes de procurar padrões específicos, entendemos o panorama: **quando** os acidentes acontecem, **quão graves** são e **quais causas** predominam. Isso calibra as análises seguintes e revela erros grosseiros nos dados.
-#
-# ### 3.1 Painel geral (4 gráficos)
-
+#-Parte 3 — Visão geral (EDA) Painel geral
 # %%
 fig, axes = plt.subplots(2, 2, figsize=(15, 9))
 
@@ -397,21 +268,8 @@ c = a.causa_acidente.value_counts().head(10).iloc[::-1]
 ax = axes[1, 1]; ax.barh(c.index, c.values, color=COR_NEUTRA); ax.set_title("Top 10 causas dos acidentes")
 plt.tight_layout(); salvar(fig, "02_panorama_geral")
 
-# %% [markdown]
-# ---
-# # Parte 4 — Hotspots (onde agir)
-#
-# Um **hotspot** é um local onde acidentes (e principalmente os graves) se concentram acima do que seria esperado ao acaso. Usaremos cinco lentes complementares:
-#
-# 1. **Trechos de rodovia** (BR + UF + km) com janela móvel e **índice UPS** (prioriza gravidade, não só quantidade).
-# 2. **Concentração** (curva de Pareto): quanto da rodovia concentra a maior parte dos acidentes.
-# 3. **Mapa** de densidade com coordenadas.
-# 4. **Recorrência** mensal: o problema é crônico ou foi um evento isolado?
-# 5. **Territórios administrativos**: municípios, delegacias e UOPs, para direcionar equipes.
-#
-# ### 4.1 Segmentação por km e janela móvel (SQL + pandas)
-# Primeiro agregamos por quilômetro em SQL. Depois aplicamos uma **janela móvel** de `JANELA_KM` km: um acidente no km 215,9 e outro no 216,1 pertencem ao mesmo problema, mesmo caindo em "caixinhas" de 1 km diferentes. Por fim selecionamos os trechos de maior UPS **sem sobreposição**.
-
+#-Parte 4 — Hotspots (onde agir)
+#--4.1 Segmentação por km e janela móvel (SQL + pandas)
 # %%
 # 1) Agregação por UF + BR + km inteiro (DuckDB)
 con.register("acidentes_df", a)
@@ -455,12 +313,7 @@ hot["trecho"] = hot.apply(lambda r: f"BR-{int(r.br):03d}/{r.uf} km {int(r.km_ini
 print(f"Hotspots identificados: {len(hot)}")
 display(hot.head(TOP_N)[["trecho", "n_acid", "mortos", "graves", "leves", "ups"]])
 
-# %% [markdown]
-# ### 4.2 Teste estatístico: o trecho é realmente anômalo?
-# Um trecho pode parecer "campeão" só por estar em rodovia muito longa ou movimentada. Comparamos o observado com o **esperado sob distribuição uniforme** ao longo da mesma BR/UF (Poisson): se a rodovia tem 400 acidentes em 400 km, esperamos ≈ 1 por km, ou ≈ 5 em uma janela de 5 km. A razão **Observado/Esperado (O/E)** e o p-valor indicam o quão fora da curva o trecho está.
-#
-# > ⚠️ Como testamos muitos trechos, use o p-valor como **critério de triagem**, não como prova (problema de comparações múltiplas). A correção de Bonferroni simples está incluída.
-
+#--4.2 Teste estatístico: o trecho é realmente anômalo?
 # %%
 def poisson_sf(k, lam):
     """P(X >= k) para X ~ Poisson(lam), calculado só com numpy/math (sem scipy)."""
@@ -483,10 +336,7 @@ hot["pct_acid_total"] = hot.n_acid / len(a) * 100
 display(hot.head(TOP_N)[["trecho", "n_acid", "esperado", "razao_O_E", "p_valor", "significativo_bonferroni", "ups"]])
 print(f"{hot.significativo_bonferroni.sum()} de {len(hot)} hotspots permanecem significativos após Bonferroni.")
 
-# %% [markdown]
-# ### 4.3 Gráfico: ranking dos hotspots (UPS e composição de vítimas)
-# Mostramos os trechos com maior UPS. A barra empilhada separa **mortos, feridos graves e feridos leves**, para que o gestor veja a natureza do problema, e não apenas a pontuação.
-
+#--4.3 Gráfico: ranking dos hotspots (UPS e composição de vítimas)
 # %%
 top = hot.head(TOP_N).iloc[::-1]
 fig, axes = plt.subplots(1, 2, figsize=(16, 7), gridspec_kw={"width_ratios": [1.2, 1]}, sharey=True)
@@ -505,25 +355,8 @@ ax.set_xlim(0, top.ups.max() * 1.35); ax.set_xlabel("UPS"); ax.set_title("Severi
 plt.suptitle(f"Top {TOP_N} hotspots (janela de {JANELA_KM} km)", fontweight="bold", y=1.0)
 plt.tight_layout(); salvar(fig, "04_ranking_hotspots")
 
-# %% [markdown]
-# ---
-# # Parte 5 — Fatores associados à gravidade (o que agravar ou proteger)
-#
-# **Variável-alvo:** `grave` = o acidente teve **pelo menos um óbito ou ferido grave**. É binária, estável e menos sensível a diferenças de registro entre leve/sem vítima.
-#
-# Seguimos uma progressão de rigor crescente:
-#
-# | Etapa | Técnica | Pergunta respondida |
-# |---|---|---|
-# | 5.1 | Taxa de gravidade com **IC de Wilson** | Qual a % de graves em cada categoria e a diferença é confiável? |
-# | 5.2 | **Risco Relativo (RR)** | Quantas vezes o risco é maior que no restante? |
-# | 5.3 | **Cramér V** | Quais variáveis têm maior associação geral com a gravidade? |
-# | 5.4 | **Regressão logística** (numpy) | Qual o efeito de cada fator **mantendo os demais constantes**? |
-# | 5.5 | Interações | Combinações que potencializam o risco |
-#
-# ### 5.1 Funções reutilizáveis
-# `taxa_por_fator` calcula, para qualquer coluna categórica, o tamanho do grupo, a taxa de graves, o **intervalo de confiança de Wilson** (mais confiável que o intervalo "normal" para proporções pequenas) e o **risco relativo** contra todos os demais grupos.
-
+#-Parte 5 — Fatores associados à gravidade (o que agravar ou proteger)
+#--5.1 Funções reutilizáveis
 # %%
 def wilson(casos, n, z=1.96):
     """Intervalo de confiança de Wilson para proporções (vetorizado)."""
@@ -557,10 +390,7 @@ def grafico_taxas(ax, res, col, base, top=12, titulo=None):
 BASE = a.grave.mean()
 print(f"Taxa geral de acidentes graves: {BASE:.1%}  (linha tracejada nos gráficos; barras vermelhas = IC inteiro acima da média)")
 
-# %% [markdown]
-# ### 5.2 Fatores do ambiente, da via e do tempo
-# Seis painéis comparando a taxa de gravidade por categoria. **Barras vermelhas** indicam categorias cujo intervalo de confiança está **inteiramente acima** da média geral, ou seja, risco elevado com segurança estatística. As barras de erro mostram a incerteza: categorias pequenas têm barras longas.
-
+#--5.2 Fatores do ambiente, da via e do tempo
 # %%
 fatores_ambiente = ["fase_dia", "condicao_metereologica", "tipo_pista", "tracado_via", "uso_solo", "faixa_horaria"]
 tabelas_fatores = {}
@@ -573,11 +403,7 @@ plt.suptitle("Taxa de acidentes graves por fator ambiental (IC 95%)", fontweight
 plt.tight_layout(); salvar(fig, "10_fatores_ambientais")
 display(pd.concat({f: t.head(3)[[f, "n", "taxa", "risco_relativo"]].rename(columns={f: "categoria"}) for f, t in tabelas_fatores.items()}))
 
-# %% [markdown]
-# ### 5.3 Tipo de acidente e causa
-# Estes são os dois fatores com maior poder de explicar a gravidade e os que mais orientam **o tipo de intervenção** (engenharia, fiscalização ou educação). Mostramos a taxa de gravidade e o **risco relativo**.
-
-# %%
+#--5.3 Tipo de acidente e causa
 res_tipo  = taxa_por_fator(a.dropna(subset=["tipo_acidente"]), "tipo_acidente")
 res_causa = taxa_por_fator(a.dropna(subset=["causa_acidente"]), "causa_acidente")
 tabelas_fatores["tipo_acidente"], tabelas_fatores["causa_acidente"] = res_tipo, res_causa
@@ -590,38 +416,7 @@ plt.tight_layout(); salvar(fig, "11_tipo_e_causa")
 display(res_tipo.head(8)[["tipo_acidente", "n", "casos", "taxa", "risco_relativo"]])
 display(res_causa.head(8)[["causa_acidente", "n", "casos", "taxa", "risco_relativo"]])
 
-# %% [markdown]
-# ### 5.4 Composição do acidente (quem se envolve)
-# Presença de motocicleta, caminhão, bicicleta ou pedestre, e número de veículos. Usuários vulneráveis (sem proteção de carroceria) tendem a ter risco muito maior, o que justifica ações dedicadas a eles.
-
-# %%
-linhas = []
-for flag, rotulo in [("tem_moto", "Motocicleta"), ("tem_caminhao", "Caminhão"), ("tem_bicicleta", "Bicicleta"), ("tem_pedestre", "Pedestre")]:
-    for val, txt in [(True, "com"), (False, "sem")]:
-        sub = a[a[flag] == val]
-        lo, hi = wilson(sub.grave.sum(), len(sub))
-        linhas.append({"fator": rotulo, "grupo": txt, "n": len(sub), "taxa": sub.grave.mean(), "lo": float(lo), "hi": float(hi)})
-comp = pd.DataFrame(linhas)
-
-fig, axes = plt.subplots(1, 2, figsize=(15, 5.5))
-ax = axes[0]
-x = np.arange(4); w = .38
-for k, (txt, cor) in enumerate([("sem", COR_NEUTRA), ("com", COR_ALERTA)]):
-    s = comp[comp.grupo == txt]
-    ax.bar(x + (k - .5) * w, s.taxa * 100, w, color=cor, label=f"{txt} o fator",
-           yerr=[(s.taxa - s.lo) * 100, (s.hi - s.taxa) * 100], capsize=3)
-ax.set_xticks(x); ax.set_xticklabels(comp.fator.unique()); ax.set_ylabel("% de acidentes graves"); ax.legend()
-ax.axhline(BASE * 100, color="k", ls="--", lw=1); ax.set_title("Presença de usuário/veículo específico")
-
-res_nv = taxa_por_fator(a, "n_veiculos_cat", min_n=10).sort_values("n_veiculos_cat")
-grafico_taxas(axes[1], res_nv, "n_veiculos_cat", BASE, titulo="Número de veículos envolvidos")
-plt.tight_layout(); salvar(fig, "12_composicao_acidente")
-display(comp)
-
-# %% [markdown]
-# ### 5.5 Quais variáveis mais se associam à gravidade? (Cramér V)
-# O **V de Cramér** mede a força da associação entre duas variáveis categóricas (0 = nenhuma, 1 = perfeita). Usamos a versão com **correção de viés** (Bergsma), importante quando há muitas categorias. É um filtro rápido para decidir onde investir atenção: as variáveis no topo merecem análise detalhada.
-
+#--5.3 Quais variáveis mais se associam à gravidade? (Cramér V)
 # %%
 def cramers_v(x, y):
     """V de Cramér com correção de viés (Bergsma, 2013), apenas numpy/pandas."""
@@ -649,141 +444,15 @@ for i, v in enumerate(assoc.cramers_v): ax.text(v, i, f" {v:.3f}", va="center", 
 ax.set_xlabel("V de Cramér (associação com acidente grave)"); ax.set_title("Ranking de associação com a gravidade")
 salvar(fig, "13_cramers_v")
 
-# %% [markdown]
-# ### 5.6 Regressão logística multivariada (efeito ajustado)
-# As taxas anteriores olham **um fator por vez** e podem confundir. Exemplo: "chuva" pode parecer perigosa só porque coincide com rodovias de pista simples. A regressão logística estima o efeito de cada fator **mantendo os demais constantes**, produzindo **Razões de Chance (Odds Ratio, OR)**: OR = 1,5 significa 50% mais chance de acidente grave que a categoria de referência.
-#
-# Implementamos a regressão com **IRLS** (mínimos quadrados reponderados iterativamente) em numpy puro, com uma leve **regularização L2** que dá estabilidade numérica. Para uso em produção, `statsmodels.Logit` fornece os mesmos coeficientes com testes e diagnósticos completos (a estrutura da tabela é a mesma).
-#
-# **Cuidados de modelagem aplicados:**
-# * categorias raras (< 1%) agrupadas em "Outros";
-# * categoria de referência = a **mais frequente** de cada variável;
-# * separação **treino (70%) / teste (30%)** e avaliação por **AUC** (capacidade de ordenar acidentes graves acima dos não graves).
-
-# %%
-def agrupar_raras(s, min_pct=0.01, top=None):
-    s = s.astype("object").fillna("Não informado")
-    freq = s.value_counts(normalize=True)
-    manter = set(freq[freq >= min_pct].index) if top is None else set(freq.head(top).index)
-    return s.where(s.isin(manter), "Outros")
-
-def montar_X(df, variaveis_cat, variaveis_bin):
-    partes, refs = [], {}
-    for v in variaveis_cat:
-        s = agrupar_raras(df[v], top=10 if v == "causa_acidente" else None)
-        ref = s.value_counts().idxmax(); refs[v] = ref
-        d = pd.get_dummies(s, prefix=v, prefix_sep="=", dtype=float).drop(columns=f"{v}={ref}")
-        partes.append(d)
-    for v in variaveis_bin:
-        partes.append(df[v].astype(float).rename(v).to_frame())
-    X = pd.concat(partes, axis=1)
-    return X, refs
-
-def logit_irls(X, y, l2=1e-2, max_iter=100, tol=1e-8):
-    """Regressão logística por IRLS. X já deve conter a coluna de intercepto na posição 0."""
-    n, p = X.shape
-    beta = np.zeros(p)
-    pen = l2 * np.eye(p); pen[0, 0] = 0                       # não penaliza o intercepto
-    for _ in range(max_iter):
-        eta = np.clip(X @ beta, -30, 30)
-        mu = 1 / (1 + np.exp(-eta))
-        W = np.clip(mu * (1 - mu), 1e-9, None)
-        z = eta + (y - mu) / W
-        XtW = X.T * W
-        H = XtW @ X + pen
-        novo = np.linalg.solve(H, XtW @ z)
-        if np.max(np.abs(novo - beta)) < tol: beta = novo; break
-        beta = novo
-    cov = np.linalg.inv(H)
-    return beta, np.sqrt(np.diag(cov))
-
-def auc_rank(y, score):
-    """AUC pela estatística de Mann-Whitney (via ranks)."""
-    r = pd.Series(score).rank().values
-    n1, n0 = y.sum(), len(y) - y.sum()
-    return (r[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)
-
-cat_vars = ["fase_dia", "condicao_metereologica", "tipo_pista", "tracado_via", "uso_solo", "tipo_acidente", "causa_acidente", "n_veiculos_cat"]
-bin_vars = ["tem_moto", "tem_caminhao", "tem_bicicleta", "fim_de_semana"]
-
-dados = a.dropna(subset=["fase_dia", "tipo_pista", "tipo_acidente"]).reset_index(drop=True)
-X_df, refs = montar_X(dados, cat_vars, bin_vars)
-y = dados.grave.astype(float).values
-
-rng = np.random.default_rng(42)
-idx = rng.permutation(len(dados)); corte = int(.7 * len(idx))
-tr, te = idx[:corte], idx[corte:]
-
-Xtr = np.column_stack([np.ones(len(tr)), X_df.values[tr]])
-Xte = np.column_stack([np.ones(len(te)), X_df.values[te]])
-beta, se = logit_irls(Xtr, y[tr])
-
-auc_tr = auc_rank(y[tr], Xtr @ beta); auc_te = auc_rank(y[te], Xte @ beta)
-print(f"AUC treino: {auc_tr:.3f} | AUC teste: {auc_te:.3f}  (0,5 = acaso; ≥0,7 = discriminação aceitável)")
-print("Categorias de referência:", refs)
-
-odds = pd.DataFrame({"variavel": ["intercepto"] + list(X_df.columns), "coef": beta, "OR": np.exp(beta),
-                     "OR_inf": np.exp(beta - 1.96 * se), "OR_sup": np.exp(beta + 1.96 * se)})
-odds["significativo"] = (odds.OR_inf > 1) | (odds.OR_sup < 1)
-odds = odds[odds.variavel != "intercepto"].sort_values("OR", ascending=False).reset_index(drop=True)
-display(odds.head(10))
-
-# %% [markdown]
-# **Gráfico de floresta (forest plot):** cada ponto é uma razão de chance ajustada com seu IC 95%. A linha vertical em **1** significa "sem efeito". Pontos à direita aumentam a chance de acidente grave; à esquerda, protegem. Em vermelho/azul, os efeitos estatisticamente significativos.
-
-# %%
-t = pd.concat([odds.head(12), odds.tail(8)]).drop_duplicates("variavel").sort_values("OR")
-fig, ax = plt.subplots(figsize=(10, 9))
-cores = np.where(~t.significativo, "#aab7b8", np.where(t.OR > 1, COR_ALERTA, COR_NEUTRA))
-ax.errorbar(t.OR, range(len(t)), xerr=[t.OR - t.OR_inf, t.OR_sup - t.OR], fmt="none", ecolor="gray", capsize=3, zorder=1)
-ax.scatter(t.OR, range(len(t)), c=cores, s=60, zorder=2)
-ax.axvline(1, color="k", ls="--"); ax.set_xscale("log")
-ax.set_yticks(range(len(t))); ax.set_yticklabels(t.variavel.str.replace("_", " "), fontsize=8)
-ax.set_xlabel("Razão de chance ajustada (escala log) para acidente grave")
-ax.set_title(f"Fatores de risco e proteção (AUC teste = {auc_te:.2f})\nvermelho = aumenta risco | azul = reduz | cinza = não significativo")
-ax.xaxis.set_major_formatter(mtick.FuncFormatter(lambda v, _: f"{v:g}"))
-salvar(fig, "14_forest_plot_odds")
-
-# %% [markdown]
-# ### 5.7 Interações: combinações que potencializam o risco
-# Efeitos isolados não contam toda a história. Cruzamos **tipo de acidente × fase do dia** e **tipo de pista × condição meteorológica**. Células escuras indicam combinações especialmente perigosas, úteis para definir *quando e onde* cada ação é mais necessária. Células com menos de 15 acidentes ficam em branco para evitar conclusões frágeis.
-
-# %%
-def tabela_cruzada(df, linha, coluna, min_n=15, top_linhas=8):
-    n = df.pivot_table(index=linha, columns=coluna, values="id", aggfunc="count")
-    taxa = df.pivot_table(index=linha, columns=coluna, values="grave", aggfunc="mean") * 100
-    taxa = taxa.where(n >= min_n)
-    linhas_top = df[linha].value_counts().head(top_linhas).index
-    return taxa.loc[taxa.index.isin(linhas_top)].dropna(how="all").dropna(axis=1, how="all")
-
-t1 = tabela_cruzada(a, "tipo_acidente", "fase_dia")
-t2 = tabela_cruzada(a, "tipo_pista", "condicao_metereologica", top_linhas=5)
-
-fig, axes = plt.subplots(1, 2, figsize=(17, 6))
-heatmap(axes[0], t1, "% graves: tipo de acidente × fase do dia", cmap="Reds", rotulo_cb="% graves")
-heatmap(axes[1], t2, "% graves: tipo de pista × condição meteorológica", cmap="Reds", rotulo_cb="% graves")
-plt.tight_layout(); salvar(fig, "15_interacoes")
-
-# %% [markdown]
-# ---
-# # Parte 6 — Perfis de risco (para quem agir)
-#
-# Aqui a unidade de análise volta a ser a **pessoa** (uma linha por envolvido). O alvo é `pessoa_grave` (óbito ou lesão grave) e, em alguns gráficos, só o óbito. Os perfis respondem: *quem* sofre consequências mais graves, em *qual veículo* e *em que contexto*, para direcionar campanhas, fiscalização e proteção de usuários vulneráveis.
-#
-# > ⚠️ **Interpretação:** as taxas abaixo são **entre os envolvidos em acidentes registrados**, não taxas populacionais. Dizem "dado que se envolveu em acidente, qual a chance de resultado grave", e não "qual o risco de dirigir". Para risco por exposição, seria necessário volume de tráfego (VMD) ou frota/habitantes.
-#
-# ### 6.1 Preparação: base de pessoas válidas
-
+#-Parte 6 — Perfis de risco (para quem agir)
+#--6.1 Preparação: base de pessoas válidas
 # %%
 pv = p[p.gravidade_pessoa != "Ignorado"].copy()
 pv["sexo_ok"] = pv.sexo.where(pv.sexo.isin(["Masculino", "Feminino"]))      # descarta "Não informado"/inválido
 BASE_P = pv.pessoa_grave.mean()
 print(f"Pessoas analisadas: {len(pv):,} | % graves (óbito ou lesão grave): {BASE_P:.1%} | % óbitos: {pv.pessoa_fatal.mean():.2%}")
 
-# %% [markdown]
-# ### 6.2 Perfil demográfico: faixa etária × sexo
-# Dois gráficos complementares: (a) a **taxa** de gravidade por faixa etária e sexo (quem tem pior desfecho) e (b) a **pirâmide** de vítimas graves/fatais em números absolutos (onde está o maior volume de vítimas). Taxa alta com volume baixo e volume alto com taxa moderada pedem ações diferentes.
-
+#--6.2 Perfil demográfico: faixa etária × sexo
 # %%
 d = pv.dropna(subset=["faixa_etaria", "sexo_ok"])
 tx = d.pivot_table(index="faixa_etaria", columns="sexo_ok", values="pessoa_grave", aggfunc="mean", observed=True) * 100
@@ -803,10 +472,7 @@ ax.xaxis.set_major_formatter(mtick.FuncFormatter(lambda v, _: f"{abs(int(v)):,}"
 ax.set_title("Pirâmide de vítimas graves/fatais"); ax.legend()
 plt.tight_layout(); salvar(fig, "16_perfil_idade_sexo")
 
-# %% [markdown]
-# ### 6.3 Perfil do usuário e do veículo
-# Tipo de envolvido (condutor, passageiro, pedestre), grupo de veículo e **idade do veículo**. Veículos mais antigos costumam ter menos itens de segurança (airbag, ABS, estrutura de absorção), e esse efeito aparece como taxa crescente com a idade da frota.
-
+#--6.3 Perfil do usuário e do veículo
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 for ax, (col, tit) in zip(axes, [("tipo_envolvido", "Tipo de envolvido"), ("grupo_veiculo", "Grupo de veículo"), ("faixa_idade_veiculo", "Idade do veículo (anos)")]):
@@ -821,252 +487,90 @@ let = pv.groupby("grupo_veiculo").agg(pessoas=("id", "size"), obitos=("pessoa_fa
 let["letalidade_%"] = let.obitos / let.pessoas * 100
 display(let.sort_values("letalidade_%", ascending=False))
 
-# %% [markdown]
-# ### 6.4 Perfis combinados (os "tipos de pessoa/situação" mais críticos)
-# Combinamos **três variáveis por vez** (veículo, faixa etária, sexo, tipo de envolvido, fase do dia, tipo de pista) e procuramos grupos com taxa significativamente acima da média. Para priorizar, usamos:
-#
-# * **Lift** = taxa do perfil ÷ taxa geral (quantas vezes pior que a média);
-# * **Casos excedentes** = graves observados − graves esperados pela média. Esta métrica equilibra **risco** e **volume**: um perfil com lift 5 mas 20 pessoas rende pouco; um perfil com lift 1,6 e 5.000 pessoas gera muitos casos evitáveis.
-#
-# Só entram perfis com **n ≥ 50** e **limite inferior do IC acima da média**.
-
+#-Parte 7 — Exportação, resumo executivo e limitações
+#--7.2 Resumo executivo automático
 # %%
-def perfis_combinados(df, variaveis, tamanho=3, min_n=50, alvo="pessoa_grave"):
-    base = df[alvo].mean()
-    saidas = []
-    for combo in itertools.combinations(variaveis, tamanho):
-        dd = df.dropna(subset=list(combo))
-        g = dd.groupby(list(combo), observed=True)[alvo].agg(n="size", casos="sum").reset_index()
-        g = g[g.n >= min_n]
-        if g.empty: continue
-        g["perfil"] = g[list(combo)].astype(str).agg("  |  ".join, axis=1)
-        saidas.append(g[["perfil", "n", "casos"]])
-    r = pd.concat(saidas, ignore_index=True)
-    r["taxa"] = r.casos / r.n
-    r["lift"] = r.taxa / base
-    r["ic_inf"], _ = wilson(r.casos, r.n)
-    r["casos_excedentes"] = r.casos - r.n * base
-    return r[r.ic_inf > base].sort_values("casos_excedentes", ascending=False)
+def melhores_categorias(res, col, base, k=3):
+    """Até k categorias com taxa significativamente acima da média, já formatadas em texto."""
+    sig = res[res.ic_inf > base].head(k)
+    return [f"{r[col]} ({r.taxa:.0%} graves; risco {r.risco_relativo:.1f}× o restante; n={int(r.n):,})"
+            for _, r in sig.iterrows()]
 
-vars_perfil = ["grupo_veiculo", "faixa_etaria", "sexo_ok", "tipo_envolvido", "fase_dia", "tipo_pista"]
-perfis = perfis_combinados(pv, vars_perfil, min_n=max(50, int(len(pv) * 0.0005)))
-print(f"Perfis significativamente acima da média: {len(perfis):,}")
 
-t = perfis.head(TOP_N).iloc[::-1]
-fig, ax = plt.subplots(figsize=(14, 7.5))
-sc = ax.barh(t.perfil, t.casos_excedentes, color=plt.cm.YlOrRd((t.lift - 1) / max(t.lift.max() - 1, 1e-9) * .8 + .2))
-for i, r in enumerate(t.itertuples()): ax.text(r.casos_excedentes, i, f"  lift {r.lift:.1f}× | n={r.n:,} | {r.taxa:.0%}", va="center", fontsize=8)
-ax.set_xlim(0, t.casos_excedentes.max() * 1.35); ax.tick_params(axis="y", labelsize=8)
-ax.set_xlabel("Casos graves excedentes (observado − esperado pela média)")
-ax.set_title("Perfis de maior prioridade: risco × volume (cor = lift)")
-salvar(fig, "18_perfis_combinados")
-display(perfis.head(10)[["perfil", "n", "casos", "taxa", "lift", "casos_excedentes"]])
+def linhas_ou_aviso(lista):
+    """Transforma uma lista de textos em linhas com marcador, ou avisa que nada foi significativo."""
+    if not lista:
+        return [" • nenhuma categoria claramente acima da média."]
+    return [f" • {x}" for x in lista]
 
-# %% [markdown]
-# ### 6.5 Perfil de cada hotspot (a "impressão digital" do trecho)
-# Dois hotspots com o mesmo UPS podem exigir intervenções opostas: um é um problema de **ultrapassagem em pista simples à noite**; outro, de **moto em travessia urbana**. Para cada trecho calculamos causa e tipo dominantes e a participação de noite, chuva, moto, caminhão, pedestre, pista simples e curva.
-#
-# A **prioridade** combina gravidade (UPS) e persistência: `prioridade = UPS × (0,5 + 0,5 × recorrência)`. Trechos crônicos sobem no ranking porque são mais previsíveis e respondem melhor a obras permanentes.
 
-# %%
-def perfil_trecho(r):
-    d = acidentes_do_trecho(r)
-    n = len(d)
-    moda = lambda s: (s.value_counts().index[0], s.value_counts(normalize=True).iloc[0]) if s.notna().any() else ("-", 0)
-    causa, pc = moda(d.causa_acidente); tipo, pt = moda(d.tipo_acidente)
-    return pd.Series({
-        "n": n, "causa_dominante": causa, "pct_causa": pc, "tipo_dominante": tipo, "pct_tipo": pt,
-        "pct_noite":   d.fase_dia.str.contains("noite", case=False, na=False).mean(),
-        "pct_chuva":   d.condicao_metereologica.str.contains("chuva|garoa|neblina|nevoeiro", case=False, na=False).mean(),
-        "pct_moto":    d.tem_moto.mean(), "pct_caminhao": d.tem_caminhao.mean(), "pct_pedestre": d.tem_pedestre.mean(),
-        "pct_pista_simples": d.tipo_pista.str.contains("simples", case=False, na=False).mean(),
-        "pct_curva":   d.tracado_via.str.contains("curva", case=False, na=False).mean(),
-        "taxa_grave":  d.grave.mean(),
-    })
+# --- panorama
+n_acid, n_mortos, n_graves_vit = len(a), int(a.mortos.sum()), int(a.feridos_graves.sum())
 
-hot_top = hot.head(30).copy().reset_index(drop=True)
-perf = hot_top.apply(perfil_trecho, axis=1)
-hot_top = pd.concat([hot_top, perf.drop(columns="n")], axis=1)
-hot_top["prioridade"] = hot_top.ups * (0.5 + 0.5 * hot_top.recorrencia_mensal.fillna(0))
-hot_top = hot_top.sort_values("prioridade", ascending=False).reset_index(drop=True)
+# --- concentração: % dos km (com acidente) que reúne metade dos acidentes
+acum = seg_km.n_acid.sort_values(ascending=False).cumsum() / seg_km.n_acid.sum()
+pct_km_50 = (int((acum < 0.5).sum()) + 1) / len(seg_km) * 100
 
-cols_ind = ["pct_noite", "pct_chuva", "pct_moto", "pct_caminhao", "pct_pedestre", "pct_pista_simples", "pct_curva", "taxa_grave"]
-mapa = hot_top.head(12).set_index("trecho")[cols_ind] * 100
-mapa.columns = ["Noite", "Chuva/neblina", "Moto", "Caminhão", "Pedestre", "Pista simples", "Curva", "% graves"]
+# --- hotspots
+top_h = hot.sort_values("ups", ascending=False).iloc[0]
+n_sig = int(hot.significativo_bonferroni.sum())
 
-fig, ax = plt.subplots(figsize=(13, 6.5))
-heatmap(ax, mapa, "Perfil dos 12 hotspots de maior prioridade (% dos acidentes do trecho)", cmap="Blues", fmt="{:.0f}", rotulo_cb="%")
-ax.set_xticklabels(mapa.columns, rotation=30, ha="right")
-plt.tight_layout(); salvar(fig, "19_perfil_hotspots")
-display(hot_top.head(10)[["trecho", "n_acid", "ups", "recorrencia_mensal", "prioridade", "causa_dominante", "tipo_dominante"]])
+# --- fatores: ambiente/via/tempo (um por fator), tipo e causa
+fatores_amb = [f for f in tabelas_fatores if f not in ("tipo_acidente", "causa_acidente")]
+linhas_ambiente = []
+for f in fatores_amb:
+    melhor = melhores_categorias(tabelas_fatores[f], f, BASE, k=1)
+    if melhor:
+        linhas_ambiente.append(f"{f.replace('_', ' ')}: {melhor[0]}")
 
-# %% [markdown]
-# ---
-# # Parte 7 — Matriz de intervenções (do diagnóstico à ação)
-#
-# Convertemos o perfil de cada hotspot em **hipóteses de intervenção** por regras simples e transparentes, organizadas em três eixos clássicos de segurança viária:
-#
-# * 🛠️ **Engenharia** (geometria, sinalização, defensas, iluminação, drenagem);
-# * 👮 **Fiscalização/Operação** (radar, blitz, escalas);
-# * 📣 **Educação/Comunicação** (campanhas direcionadas ao perfil dominante).
-#
-# > As regras são **ponto de partida**, não receita. Cada trecho deve passar por **inspeção de segurança viária em campo** antes de qualquer obra. A transparência das regras permite que especialistas as revisem e ajustem; é um bom padrão para sistemas de apoio à decisão.
+# --- associação geral (V de Cramér)
+top_assoc = assoc.sort_values("cramers_v", ascending=False).head(3)
+txt_assoc = "; ".join(f"{r.variavel} (V={r.cramers_v:.2f})" for r in top_assoc.itertuples())
 
-# %%
-# (expressão regular sobre causa/tipo em minúsculas, eixo, ação)
-REGRAS_CAUSA = [
-    ("velocidade",              "Fiscalização", "Fiscalização eletrônica de velocidade e revisão do limite; redutores em travessias"),
-    ("álcool|alcool|embriaguez","Fiscalização", "Operações Lei Seca em horários noturnos e de fim de semana"),
-    ("dormindo|sono|fadiga",    "Engenharia",   "Sonorizadores (rumble strips), áreas de descanso e paradas para motoristas profissionais"),
-    ("animal",                  "Engenharia",   "Cercamento, passagens de fauna e sinalização específica de animais"),
-    ("ultrapassagem",           "Engenharia",   "Terceira faixa/faixa de ultrapassagem, linha dupla contínua e separador físico"),
-    ("distância|distancia",     "Educação",     "Campanha de distância segura e sinalização horizontal de espaçamento (chevrons)"),
-    ("atenção|atencao",         "Educação",     "Campanha sobre uso de celular/distração e sonorizadores no acostamento"),
-    ("desobediência|desobediencia|normas", "Fiscalização", "Fiscalização de infrações e revisão de semaforização/sinalização de conflito"),
-    ("defeito|mecânico|mecanico","Fiscalização","Operações de inspeção de veículos (freios, pneus) e transporte de carga"),
+# --- perfis de risco
+let_ok = let[let.pessoas >= MIN_N_FATOR].sort_values("letalidade_%", ascending=False)
+faixas = (pv.dropna(subset=["faixa_etaria"]).groupby("faixa_etaria", observed=True)
+            .pessoa_grave.agg(n="size", taxa="mean"))
+faixas = faixas[faixas.n >= MIN_N_FATOR]
+sexos = pv.dropna(subset=["sexo_ok"]).groupby("sexo_ok").pessoa_grave.mean()
+
+linhas_perfil = []
+if len(let_ok):
+    g = let_ok.index[0]
+    linhas_perfil.append(f"Grupo de veículo mais letal entre os envolvidos: {g} ({let_ok.loc[g, 'letalidade_%']:.1f}% de óbitos).")
+if len(faixas):
+    f_top = faixas.taxa.idxmax()
+    linhas_perfil.append(f"Faixa etária com maior taxa de óbito/lesão grave: {f_top} anos ({faixas.loc[f_top, 'taxa']:.1%}).")
+if {"Masculino", "Feminino"} <= set(sexos.index):
+    linhas_perfil.append(f"Taxa de óbito/lesão grave: homens {sexos['Masculino']:.1%} | mulheres {sexos['Feminino']:.1%}.")
+
+linhas = [
+    f"RESUMO EXECUTIVO — ACIDENTES {ANO_REF}",
+    "=" * 62,
+    "PANORAMA",
+    f" • {n_acid:,} acidentes, {n_mortos:,} mortos e {n_graves_vit:,} feridos graves.",
+    f" • {a.grave.mean():.1%} dos acidentes foram graves (óbito ou lesão grave); {a.fatal.mean():.1%} tiveram óbito.",
+    "",
+    "HOTSPOTS",
+    f" • 50% dos acidentes estão em apenas {pct_km_50:.1f}% dos quilômetros com ocorrência.",
+    f" • Trecho nº 1 em severidade: {top_h.trecho} — {int(top_h.n_acid)} acidentes, {int(top_h.mortos)} mortos, UPS {int(top_h.ups)}.",
+    f" • {n_sig} dos {len(hot)} principais trechos são estatisticamente anômalos (Poisson + Bonferroni).",
+    "",
+    "FATORES ASSOCIADOS À GRAVIDADE (taxas com IC 95%)",
+    " Tipo de acidente:",
+    *linhas_ou_aviso(melhores_categorias(res_tipo, "tipo_acidente", BASE)),
+    " Causa:",
+    *linhas_ou_aviso(melhores_categorias(res_causa, "causa_acidente", BASE)),
+    " Ambiente, via e horário:",
+    *linhas_ou_aviso(linhas_ambiente),
+    f" • Maior associação geral com a gravidade (V de Cramér): {txt_assoc}.",
+    "",
+    "PERFIS DE RISCO",
+    *linhas_ou_aviso(linhas_perfil),
+    "",
+    "Observação: taxas calculadas entre os envolvidos em acidentes registrados (sem dados de exposição/tráfego).",
 ]
-REGRAS_TIPO = [
-    ("frontal",                 "Engenharia",   "Defensa/barreira central e tratamento de trechos de ultrapassagem"),
-    ("pedestre",                "Engenharia",   "Passarela/travessia segura, iluminação e acostamento para pedestres"),
-    ("saída|saida",             "Engenharia",   "Defensas, delineadores e tratamento de curvas e drenagem"),
-    ("capotamento|tombamento",  "Engenharia",   "Revisão de curva (raio/superelevação), sinalização de velocidade e atrito do pavimento"),
-    ("transversal|lateral",     "Engenharia",   "Revisão de interseções: rotatória, semáforo, retorno e acessos"),
-    ("traseira|engavet",        "Engenharia",   "Sinalização antecipada de lentidão/congestionamento (painéis) e fiscalização de distância"),
-]
-def regras_contexto(r):
-    saidas = []
-    if r.pct_noite >= 0.40:       saidas.append(("Engenharia",   "Iluminação e sinalização refletiva; fiscalização noturna"))
-    if r.pct_chuva >= 0.25:       saidas.append(("Engenharia",   "Drenagem, pavimento antiderrapante e sinalização para chuva/neblina"))
-    if r.pct_moto >= 0.25:        saidas.append(("Educação",     "Ações dirigidas a motociclistas e defensas protetivas para motociclistas"))
-    if r.pct_pedestre >= 0.10:    saidas.append(("Engenharia",   "Travessias, calçadas e redução de velocidade em área urbana"))
-    if r.pct_curva >= 0.40:       saidas.append(("Engenharia",   "Revisão geométrica da curva e sinalização vertical/horizontal"))
-    if r.pct_pista_simples >= 0.60 and r.pct_caminhao >= 0.25: saidas.append(("Engenharia", "Faixa adicional para veículos lentos / duplicação"))
-    return saidas
-
-def recomendar(r):
-    acoes = []
-    for padrao, eixo, txt in REGRAS_CAUSA:
-        if pd.Series([str(r.causa_dominante).lower()]).str.contains(padrao, regex=True).iloc[0]: acoes.append((eixo, txt)); break
-    for padrao, eixo, txt in REGRAS_TIPO:
-        if pd.Series([str(r.tipo_dominante).lower()]).str.contains(padrao, regex=True).iloc[0]: acoes.append((eixo, txt)); break
-    acoes += regras_contexto(r)
-    return acoes[:5]
-
-hot_top["acoes"] = hot_top.apply(recomendar, axis=1)
-hot_top["recomendacao"] = hot_top.acoes.apply(lambda l: " • ".join(f"[{e}] {t}" for e, t in l))
-
-matriz = hot_top.head(15)[["trecho", "ups", "mortos", "recorrencia_mensal", "causa_dominante", "tipo_dominante", "recomendacao"]]
-pd.set_option("display.max_colwidth", 220)
-display(matriz)
-
-# %% [markdown]
-# **Gráfico-síntese:** quantas vezes cada ação foi sugerida entre os 15 hotspots prioritários, colorida por eixo. Ajuda a ver, por exemplo, se o portfólio de intervenções é predominantemente de engenharia (investimento) ou de fiscalização (custeio).
-
-# %%
-linhas = [(e, t) for l in hot_top.head(15).acoes for e, t in l]
-cont = pd.DataFrame(linhas, columns=["eixo", "acao"]).value_counts().reset_index(name="trechos").sort_values("trechos")
-cor_eixo = {"Engenharia": COR_NEUTRA, "Fiscalização": COR_ALERTA, "Educação": COR_DESTAQUE}
-
-fig, ax = plt.subplots(figsize=(13, 7))
-ax.barh(cont.acao.str.slice(0, 85), cont.trechos, color=cont.eixo.map(cor_eixo))
-ax.set_xlabel("Nº de hotspots prioritários em que a ação é sugerida"); ax.tick_params(axis="y", labelsize=8)
-ax.set_title("Portfólio de intervenções sugeridas para os 15 hotspots prioritários")
-from matplotlib.patches import Patch
-ax.legend(handles=[Patch(color=c, label=e) for e, c in cor_eixo.items()], loc="lower right")
-salvar(fig, "20_portfolio_intervencoes")
-
-# %% [markdown]
-# ---
-# # Parte 8 — Exportação, resumo executivo e limitações
-#
-# ### 8.1 Exportar resultados
-# * **CSV** com `utf-8-sig` (abre com acentos corretos no Excel) para as tabelas finais;
-# * **Parquet** (via DuckDB, nativo e sem dependências extras) para as camadas *silver*, reaproveitáveis em painéis e em atualizações futuras.
-
-# %%
-hot_export = hot_top.drop(columns=["acoes"])
-hot_export.to_csv(PASTA / "tabelas" / "hotspots_priorizados.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-odds.to_csv(PASTA / "tabelas" / "odds_ratio_gravidade.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-perfis.head(200).to_csv(PASTA / "tabelas" / "perfis_de_risco.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-mun.sort_values("ups", ascending=False).to_csv(PASTA / "tabelas" / "municipios.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-del_rank.to_csv(PASTA / "tabelas" / "delegacias.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-uop_rank.to_csv(PASTA / "tabelas" / "uops.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-pd.concat(tabelas_fatores, names=["fator"]).reset_index(level=0).to_csv(PASTA / "tabelas" / "taxas_por_fator.csv", index=False, encoding="utf-8-sig", sep=";", decimal=",")
-
-# Parquet com DuckDB (camadas silver)
-con.register("acidentes_final", a)
-con.execute(f"COPY pessoas_sql TO '{(PASTA / 'pessoas_silver.parquet').as_posix()}' (FORMAT PARQUET)")
-con.execute(f"COPY acidentes_final TO '{(PASTA / 'acidentes_silver.parquet').as_posix()}' (FORMAT PARQUET)")
-print("Arquivos gerados:")
-for f in sorted(PASTA.rglob("*")):
-    if f.is_file() and f.suffix in (".csv", ".parquet", ".html", ".txt"): print(" -", f.relative_to(PASTA))
-
-# %% [markdown]
-# ### 8.2 Resumo executivo automático
-# Textos-síntese gerados a partir dos resultados, para colar em relatório ou apresentação. Como são calculados no código, **atualizam sozinhos** quando você rodar o notebook com um novo arquivo.
-
-# %%
-top_h = hot_top.iloc[0]
-fator_top = odds[odds.significativo].head(3).variavel.tolist()
-protetor  = odds[odds.significativo].tail(2).variavel.tolist()
-perfil_top = perfis.iloc[0] if len(perfis) else None
-letal_veic = let.sort_values("letalidade_%", ascending=False).index[0]
-
-resumo = f"""
-RESUMO EXECUTIVO — ACIDENTES {ANO_REF}
-{'=' * 60}
-PANORAMA
- • {len(a):,} acidentes, {a.mortos.sum():,} mortos e {a.feridos_graves.sum():,} feridos graves.
- • {a.grave.mean():.1%} dos acidentes foram graves (óbito ou lesão grave); {a.fatal.mean():.1%} tiveram óbito.
-
-HOTSPOTS
- • 50% dos acidentes se concentram em apenas {p50_acid:.1f}% dos quilômetros com ocorrência.
- • Trecho prioritário nº 1: {top_h.trecho} — {int(top_h.n_acid)} acidentes, {int(top_h.mortos)} mortos, UPS {int(top_h.ups)}, recorrência {top_h.recorrencia_mensal:.0%} dos meses.
- • {hot.significativo_bonferroni.sum()} dos {len(hot)} principais trechos são estatisticamente anômalos (Poisson + Bonferroni).
-
-FATORES DE GRAVIDADE (efeito ajustado, regressão logística, AUC teste = {auc_te:.2f})
- • Maiores aumentos de risco: {'; '.join(fator_top)}.
- • Maiores efeitos protetores: {'; '.join(protetor)}.
-
-PERFIS DE RISCO
- • Grupo com maior letalidade entre os envolvidos: {letal_veic} ({let.loc[letal_veic, 'letalidade_%']:.1f}% de óbitos).
- • Perfil de maior prioridade (risco × volume): {perfil_top.perfil if perfil_top is not None else 'n/d'}.
-"""
+resumo = "\n".join(linhas)
 print(resumo)
-_ = (PASTA / "resumo_executivo.txt").write_text(resumo, encoding="utf-8")
-
-# %% [markdown]
-# ### 8.3 Limitações e boas práticas (leia antes de apresentar resultados)
-#
-# 1. **Sub-registro e viés de registro:** acidentes sem vítima são menos notificados; a taxa de gravidade pode ficar superestimada em locais onde só ocorrências sérias chegam à polícia.
-# 2. **Falta de exposição:** sem volume de tráfego (VMD) ou frota, contamos acidentes, não **risco**. Rodovias movimentadas aparecem mais por terem mais veículos. O próximo passo é calcular acidentes por milhão de veículos-km.
-# 3. **Associação não é causalidade:** os OR mostram o que *anda junto* com gravidade. Ex.: "noite" pode refletir álcool, cansaço e baixa visibilidade ao mesmo tempo.
-# 4. **Regressão ao longo da média:** trechos escolhidos por terem tido muitos acidentes em um ano tendem a melhorar sozinhos no seguinte. Para **avaliar uma intervenção**, use método antes/depois com **Empirical Bayes** e grupo de comparação.
-# 5. **Precisão do km e das coordenadas:** erros de 1 a 2 km no registro do local deslocam acidentes entre trechos. A janela de 5 km ameniza, mas confira os hotspots no mapa.
-# 6. **Janela de um único ano:** use 3 a 5 anos para estabilizar o ranking de hotspots (a base de 2026 isolada é um bom início).
-# 7. **Comparações múltiplas:** com muitos trechos e categorias, algumas diferenças "significativas" aparecem por acaso. Priorize resultados consistentes entre análises (hotspot + recorrência + OR ajustado).
-# 8. **Privacidade (LGPD):** os dados são anonimizados, mas ao cruzar idade, sexo, local e horário pode haver reidentificação em locais pequenos. Divulgue agregados.
-#
-# ### 8.4 Próximos passos para evoluir o projeto
-# | Passo | Como |
-# |---|---|
-# | Unir **mais anos** (2020–2026) | `read_csv('dados/*.csv')` no DuckDB (aceita curinga) e coluna `ano` |
-# | Hotspots geoestatísticos | **KDE/Getis-Ord** com `geopandas` + `pysal`, com *snap* das coordenadas ao eixo da rodovia |
-# | Modelo preditivo de risco | `scikit-learn`/`LightGBM` + **SHAP** para explicabilidade; validação temporal |
-# | Previsão de volume | Séries temporais mensais por trecho (`statsmodels`, `Prophet`) |
-# | Painel interativo | **Streamlit** ou **Power BI** lendo os Parquet de `saida/` |
-# | Automatização | Script `.py` agendado (cron/Prefect) que gera os relatórios mensalmente |
-# | Avaliação de impacto | Antes/depois com Empirical Bayes em trechos tratados × grupo de controle |
-
-# %% [markdown]
-# ### 8.5 Encerrar a conexão
-# Fecha o DuckDB de forma limpa (libera memória e arquivos).
-
-# %%
-import gc
-for _nome in ["pessoas_df", "acidentes_df", "acidentes_final"]:
-    try: con.unregister(_nome)
-    except Exception: pass
-con.close()
-del con; gc.collect()
-print("Análise concluída. Resultados em:", PASTA)
+(PASTA / "resumo_executivo.txt").write_text(resumo, encoding="utf-8")
+print("\nResumo salvo em:", PASTA / "resumo_executivo.txt")
