@@ -7,6 +7,7 @@ O projeto foi realizado com o auxílio do Claude para criação e documentação
 O projeto análisa os dados de acidentes nas rodovias federarias ao redor do Brasil para apontar as principas causas de acidentes, os tipos mais comuns, auxiliando onde é necessário aumentar a atenção e prioridade para resolução. Por se tratar de dados apenas de janeiro a agosto de 2026, ainda é necessário um arquivo com mais dados que pode ser obtido posteriormente e rodado no código normalmente.
 
 ## Estrutura do repositório
+<code>
 projeto-acidentes-2026/
 ├── main.py                              # script principal (Partes 1 a 7)
 ├── requirements.txt                     # pandas, numpy, duckdb, matplotlib
@@ -24,12 +25,13 @@ projeto-acidentes-2026/
     │   ├── 16_perfil_idade_sexo.png
     │   └── 17_perfil_usuario_veiculo.png
     └── resumo_executivo.txt
+</code>
 
 ## Mapa detalhado: o que cada parte faz e produz
 main.py
-├── Parte 1 - Configuração, carga e qualidade\n
-│   ├── 1.1 Bibliotecas e parâmetros ... JANELA_KM, MIN_ACID_HOTSPOT, TOP_N, MIN_N_FATOR, PESOS_UPS\n
-│   │                                    funções: display(), salvar()\n
+├── Parte 1 - Configuração, carga e qualidade
+│   ├── 1.1 Bibliotecas e parâmetros ... JANELA_KM, MIN_ACID_HOTSPOT, TOP_N, MIN_N_FATOR, PESOS_UPS
+│   │                                    funções: display(), salvar()
 │   ├── 1.2 Carga com DuckDB ........... CSV -> tabela "bruto" (tudo como texto)
 │   └── 1.3 Valores ausentes ........... gráfico 01_qualidade_ausentes
 │
