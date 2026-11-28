@@ -27,9 +27,9 @@ projeto-acidentes-2026/
 
 ## Mapa detalhado: o que cada parte faz e produz
 main.py
-├── Parte 1 - Configuração, carga e qualidade
-│   ├── 1.1 Bibliotecas e parâmetros ... JANELA_KM, MIN_ACID_HOTSPOT, TOP_N, MIN_N_FATOR, PESOS_UPS
-│   │                                    funções: display(), salvar()
+├── Parte 1 - Configuração, carga e qualidade\n
+│   ├── 1.1 Bibliotecas e parâmetros ... JANELA_KM, MIN_ACID_HOTSPOT, TOP_N, MIN_N_FATOR, PESOS_UPS\n
+│   │                                    funções: display(), salvar()\n
 │   ├── 1.2 Carga com DuckDB ........... CSV -> tabela "bruto" (tudo como texto)
 │   └── 1.3 Valores ausentes ........... gráfico 01_qualidade_ausentes
 │
