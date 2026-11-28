@@ -28,6 +28,7 @@ projeto-acidentes-2026/
 </code>
 
 ## Mapa detalhado: o que cada parte faz e produz
+<code>
 main.py
 ├── Parte 1 - Configuração, carga e qualidade
 │   ├── 1.1 Bibliotecas e parâmetros ... JANELA_KM, MIN_ACID_HOTSPOT, TOP_N, MIN_N_FATOR, PESOS_UPS
@@ -59,5 +60,6 @@ main.py
 │   └── 6.3 Usuário e veículo .......... 17_perfil_usuario_veiculo, tabela de letalidade
 │
 └── Parte 7 - Resumo executivo ......... melhores_categorias(), linhas_ou_aviso() -> resumo_executivo.txt
+</code>
 
 FONTE DE DADOS: https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf - arquivo utilizado: Documento CSV de Acidentes 2026 (Agrupados por pessoa - Todas as causas e tipos de acidentes)
